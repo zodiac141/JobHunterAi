@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import axios from 'axios';
 import { 
   Terminal, 
   Loader2, 
@@ -9,19 +10,37 @@ import {
   Search,
   Filter,
   Save,
-  ArrowRight
+  ArrowRight,
+  AlertTriangle
 } from 'lucide-react';
 import type { JobCriteria } from '../App';
-import { api, LogEntry, SavedLead, AgentStatus } from '../services/api';
+
+// --- Types match your Python Backend ---
+interface LogEntry {
+  id?: string;
+  message: string;
+  type: 'thought' | 'action' | 'system' | 'error';
+  timestamp?: string;
+}
+
+interface JobLead {
+  company: string;
+  title: string;
+  url: string;
+  source?: string;
+  email?: string; // Optional, as backend finds Job Posts first
+}
 
 interface AgentDashboardProps {
   criteria: JobCriteria;
 }
 
+const API_BASE_URL = "http://localhost:8000";
+
 const AgentDashboard: React.FC<AgentDashboardProps> = ({ criteria }) => {
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  const [savedLeads, setSavedLeads] = useState<SavedLead[]>([]);
-  const [agentState, setAgentState] = useState<AgentStatus>('IDLE');
+  const [savedLeads, setSavedLeads] = useState<JobLead[]>([]);
+  const [agentState, setAgentState] = useState<string>('IDLE');
   const [runId, setRunId] = useState<string | null>(null);
   const logsEndRef = useRef<HTMLDivElement>(null);
   const pollingInterval = useRef<number | null>(null);
@@ -39,21 +58,22 @@ const AgentDashboard: React.FC<AgentDashboardProps> = ({ criteria }) => {
       try {
         setAgentState('PLANNING');
         setLogs([{ 
-            id: 'init', 
-            timestamp: new Date().toLocaleTimeString(), 
-            message: 'Handshaking with Backend Controller...', 
-            type: 'system' 
+            message: 'Initializing connection to Python Backend...', 
+            type: 'system',
+            timestamp: new Date().toLocaleTimeString()
         }]);
 
-        const response = await api.startAgent(criteria);
-        setRunId(response.run_id);
-        setAgentState(response.status);
+        // Call the Python Backend
+        const response = await axios.post(`${API_BASE_URL}/api/agent/run`, criteria);
+        
+        setRunId(response.data.run_id);
+        setAgentState(response.data.status);
       } catch (error) {
+        console.error(error);
         setLogs(prev => [...prev, {
-            id: 'err', 
-            timestamp: new Date().toLocaleTimeString(), 
-            message: `Connection Error: ${error instanceof Error ? error.message : 'Unknown'}`, 
-            type: 'error'
+            message: `Connection Error: Is the backend running on port 8000?`, 
+            type: 'error',
+            timestamp: new Date().toLocaleTimeString()
         }]);
         setAgentState('FAILED');
       }
@@ -75,14 +95,15 @@ const AgentDashboard: React.FC<AgentDashboardProps> = ({ criteria }) => {
 
     pollingInterval.current = window.setInterval(async () => {
         try {
-            const state = await api.getAgentState(runId);
+            const response = await axios.get(`${API_BASE_URL}/api/agent/run/${runId}`);
+            const state = response.data;
             
-            // Sync local state with backend state
+            // Update UI State
             setAgentState(state.status);
-            setLogs(state.logs);
-            setSavedLeads(state.leads);
+            setLogs(state.logs || []);
+            setSavedLeads(state.leads || []);
 
-            if (state.status === 'COMPLETED' || state.status === 'FAILED') {
+            if (state.status === 'COMPLETED' || state.status === 'ERROR') {
                 if (pollingInterval.current) window.clearInterval(pollingInterval.current);
             }
         } catch (e) {
@@ -97,11 +118,11 @@ const AgentDashboard: React.FC<AgentDashboardProps> = ({ criteria }) => {
 
   const downloadCSV = () => {
     if (savedLeads.length === 0) return;
-    const headers = ['First Name', 'Email', 'Company', 'Job Title', 'URL', 'Source'];
+    const headers = ['Company', 'Job Title', 'URL', 'Source'];
     const csvContent = [
       headers.join(','),
       ...savedLeads.map(row => 
-        [row.fname, row.email, row.company, row.title, row.url, row.source]
+        [row.company, row.title, row.url, row.source || 'Web']
           .map(field => `"${field || ''}"`).join(',')
       )
     ].join('\n');
@@ -139,13 +160,13 @@ const AgentDashboard: React.FC<AgentDashboardProps> = ({ criteria }) => {
           active={agentState === 'FILTERING'} 
           completed={['SAVING', 'COMPLETED'].includes(agentState)}
           icon={<Filter className="w-5 h-5" />} 
-          label="REASON" 
+          label="FILTER" 
         />
         <StateNode 
           active={agentState === 'SAVING'} 
           completed={['COMPLETED'].includes(agentState)}
           icon={<Save className="w-5 h-5" />} 
-          label="EXTRACT" 
+          label="SAVE" 
         />
         <StateNode 
           active={agentState === 'COMPLETED'} 
@@ -164,21 +185,21 @@ const AgentDashboard: React.FC<AgentDashboardProps> = ({ criteria }) => {
               <Terminal className="w-4 h-4 text-indigo-400" />
               <span className="font-mono text-xs text-slate-400 font-bold uppercase tracking-wider">Backend Stream</span>
             </div>
-            {agentState !== 'COMPLETED' && agentState !== 'IDLE' && agentState !== 'FAILED' && (
+            {agentState !== 'COMPLETED' && agentState !== 'IDLE' && agentState !== 'FAILED' && agentState !== 'ERROR' && (
                 <div className="flex items-center gap-2">
-                     <span className="text-[10px] text-slate-500 animate-pulse">Polling</span>
-                     <Loader2 className="w-4 h-4 text-indigo-500 animate-spin" />
+                      <span className="text-[10px] text-slate-500 animate-pulse">Live</span>
+                      <Loader2 className="w-4 h-4 text-indigo-500 animate-spin" />
                 </div>
             )}
           </div>
           <div className="flex-1 overflow-y-auto p-4 space-y-4 font-mono text-xs md:text-sm custom-scrollbar">
-            {logs.map((log) => (
-              <div key={log.id} className="flex gap-3 animate-in fade-in slide-in-from-left-2 duration-300">
+            {logs.map((log, index) => (
+              <div key={index} className="flex gap-3 animate-in fade-in slide-in-from-left-2 duration-300">
                  <div className="mt-0.5 shrink-0 opacity-50">
                     {log.type === 'thought' && <BrainCircuit className="w-3 h-3 text-pink-400" />}
                     {log.type === 'action' && <ArrowRight className="w-3 h-3 text-indigo-400" />}
                     {log.type === 'system' && <Terminal className="w-3 h-3 text-slate-500" />}
-                    {log.type === 'error' && <AlertTriangleIcon className="w-3 h-3 text-red-500" />}
+                    {log.type === 'error' && <AlertTriangle className="w-3 h-3 text-red-500" />}
                  </div>
                  <div className="flex flex-col">
                     <span className="text-[10px] text-slate-600 mb-0.5 uppercase tracking-widest">{log.type}</span>
@@ -203,9 +224,9 @@ const AgentDashboard: React.FC<AgentDashboardProps> = ({ criteria }) => {
              <div className="flex items-center gap-2">
                 <Table2 className="w-5 h-5 text-slate-700" />
                 <div>
-                   <h3 className="font-bold text-slate-800 text-sm">Extracted Leads</h3>
+                   <h3 className="font-bold text-slate-800 text-sm">Extracted Jobs</h3>
                    <p className="text-[10px] text-slate-500">
-                     {savedLeads.length} jobs found • From Backend
+                     {savedLeads.length} jobs found • Synced to Google Sheet
                    </p>
                 </div>
              </div>
@@ -229,8 +250,8 @@ const AgentDashboard: React.FC<AgentDashboardProps> = ({ criteria }) => {
                    <tr>
                       <th className="px-4 py-2 font-semibold">Company</th>
                       <th className="px-4 py-2 font-semibold">Role</th>
+                      <th className="px-4 py-2 font-semibold">Contact / Email</th>
                       <th className="px-4 py-2 font-semibold">Source</th>
-                      <th className="px-4 py-2 font-semibold">Email</th>
                       <th className="px-4 py-2 font-semibold text-right">Link</th>
                    </tr>
                 </thead>
@@ -238,11 +259,16 @@ const AgentDashboard: React.FC<AgentDashboardProps> = ({ criteria }) => {
                    {savedLeads.map((lead, idx) => (
                       <tr key={idx} className="hover:bg-indigo-50/30 transition-colors animate-in slide-in-from-bottom-2">
                          <td className="px-4 py-3 font-medium text-slate-900">{lead.company}</td>
-                         <td className="px-4 py-3 text-slate-600 max-w-[150px] truncate">{lead.title}</td>
-                         <td className="px-4 py-3 text-slate-600 text-xs font-mono">{lead.source}</td>
-                         <td className="px-4 py-3 text-slate-500 font-mono text-xs">{lead.email}</td>
+                         <td className="px-4 py-3 text-slate-600 max-w-[150px] truncate" title={lead.title}>{lead.title}</td>
+                         {/* Placeholder for Email since backend finds Job Listings first */}
+                         <td className="px-4 py-3 text-slate-400 font-mono text-xs italic">
+                            {lead.email || "Hiring Team"}
+                         </td>
+                         <td className="px-4 py-3 text-slate-600 text-xs font-mono">{lead.source || "Web"}</td>
                          <td className="px-4 py-3 text-right">
-                            <a href={lead.url} target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline text-xs">View</a>
+                            <a href={lead.url} target="_blank" rel="noreferrer" className="text-indigo-600 hover:underline text-xs font-semibold">
+                               Apply &rarr;
+                            </a>
                          </td>
                       </tr>
                    ))}
@@ -250,8 +276,8 @@ const AgentDashboard: React.FC<AgentDashboardProps> = ({ criteria }) => {
                       <tr>
                          <td colSpan={5} className="px-4 py-12 text-center text-slate-400">
                             {agentState === 'COMPLETED' 
-                               ? 'Backend workflow finished. No jobs found.' 
-                               : agentState === 'FAILED' ? 'Backend process failed.' : 'Waiting for backend results...'}
+                               ? 'Workflow finished. No matching jobs found.' 
+                               : agentState === 'FAILED' ? 'Backend connection failed.' : 'Agent is scanning the web...'}
                          </td>
                       </tr>
                    )}
@@ -280,10 +306,6 @@ const StateNode: React.FC<{ active: boolean; completed: boolean; icon: React.Rea
       ${active ? 'text-indigo-400' : completed ? 'text-emerald-400' : 'text-slate-600'}
     `}>{label}</span>
   </div>
-);
-
-const AlertTriangleIcon: React.FC<{ className?: string }> = ({ className }) => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
 );
 
 export default AgentDashboard;
