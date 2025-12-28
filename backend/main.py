@@ -30,16 +30,18 @@ class JobCriteria(BaseModel):
 async def run_agent_background(run_id: str, criteria: JobCriteria):
     # Initialize state
     initial_state = {
-        "role": criteria.role,
-        "location": criteria.location,
-        "experience": criteria.experience,
-        "skills": criteria.skills,
-        "logs": [{"message": "Agent initialized.", "type": "system"}],
-        "leads": [],
-        "status": "PLANNING",
-        "search_queries": [],
-        "raw_search_results": []
-    }
+    "role": criteria.role,
+    "location": criteria.location,
+    "experience": criteria.experience,
+    "skills": criteria.skills,
+
+    "candidate_leads": [],
+    "leads": [],
+
+    "logs": [{"message": "Agent initialized.", "type": "system"}],
+    "status": "PLANNING"
+     }
+
     
     JOBS_DB[run_id] = initial_state
 
@@ -50,10 +52,17 @@ async def run_agent_background(run_id: str, criteria: JobCriteria):
                 current = JOBS_DB[run_id]
                 
                 # Update Status
-                if node_name == "planner": current["status"] = "SEARCHING"
-                elif node_name == "searcher": current["status"] = "FILTERING"
-                elif node_name == "filter": current["status"] = "SAVING"
-                elif node_name == "saver": current["status"] = "COMPLETED"
+                if node_name in ["career", "linkedin", "wellfound"]:
+                      current["status"] = "SEARCHING"
+                elif node_name == "merge_validate":
+                      current["status"] = "VALIDATING"
+                elif node_name == "score":
+                      current["status"] = "SCORING"
+                elif node_name == "email_enrich":
+                      current["status"] = "ENRICHING"
+                elif node_name == "save":
+                      current["status"] = "COMPLETED"
+
                 
                 # Append Logs
                 if "logs" in state and state["logs"]:
