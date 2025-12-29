@@ -15,11 +15,7 @@ from langchain_core.messages import HumanMessage
 # =================================================
 load_dotenv()
 
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
-    temperature=0
-)
-
+llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
 tavily = TavilyClient(api_key=os.getenv("TAVILY_API_KEY"))
 
 # Google Sheets
@@ -46,6 +42,10 @@ class AgentState(TypedDict):
     experience: str
     skills: str
 
+    career_leads: List[dict]
+    linkedin_leads: List[dict]
+    wellfound_leads: List[dict]
+
     candidate_leads: List[dict]
     leads: List[dict]
 
@@ -64,11 +64,8 @@ def deduplicate_leads(leads: List[dict]) -> List[dict]:
 
     for l in leads:
         key = normalize(l["company"]) + normalize(l["title"])
-        if key not in seen:
+        if key not in seen or priority[l["source"]] > priority[seen[key]["source"]]:
             seen[key] = l
-        else:
-            if priority[l["source"]] > priority[seen[key]["source"]]:
-                seen[key] = l
 
     return list(seen.values())
 
@@ -77,13 +74,17 @@ def deduplicate_leads(leads: List[dict]) -> List[dict]:
 # =================================================
 def planner_node(state: AgentState):
     return {
+        "career_leads": [],
+        "linkedin_leads": [],
+        "wellfound_leads": [],
         "candidate_leads": [],
+        "leads": [],
         "logs": [{"message": "Planner initialized. Launching parallel search.", "type": "system"}],
         "status": "SEARCHING"
     }
 
 # =================================================
-# PARALLEL SEARCH NODES
+# PARALLEL SEARCH NODES (WRITE TO UNIQUE KEYS)
 # =================================================
 def career_search_node(state: AgentState):
     queries = [
@@ -107,7 +108,7 @@ def career_search_node(state: AgentState):
         except Exception:
             pass
 
-    return {"candidate_leads": leads}
+    return {"career_leads": leads}
 
 def linkedin_search_node(state: AgentState):
     query = f"site:linkedin.com/jobs {state['role']} {state['location']}"
@@ -126,7 +127,7 @@ def linkedin_search_node(state: AgentState):
     except Exception:
         pass
 
-    return {"candidate_leads": leads}
+    return {"linkedin_leads": leads}
 
 def wellfound_search_node(state: AgentState):
     query = f"site:wellfound.com/jobs {state['role']} {state['location']}"
@@ -145,13 +146,17 @@ def wellfound_search_node(state: AgentState):
     except Exception:
         pass
 
-    return {"candidate_leads": leads}
+    return {"wellfound_leads": leads}
 
 # =================================================
 # MERGE + VALIDATE + DEDUPE
 # =================================================
 def merge_and_validate_node(state: AgentState):
-    merged = state["candidate_leads"]
+    merged = (
+        state["career_leads"] +
+        state["linkedin_leads"] +
+        state["wellfound_leads"]
+    )
 
     valid = []
     for l in merged:
@@ -211,7 +216,7 @@ def scoring_node(state: AgentState):
     }
 
 # =================================================
-# LLM EMAIL EXTRACTION (SAFE)
+# LLM EMAIL EXTRACTION
 # =================================================
 def email_enrichment_node(state: AgentState):
     enriched = []
@@ -236,8 +241,7 @@ def email_enrichment_node(state: AgentState):
         try:
             response = llm.invoke([HumanMessage(content=prompt)])
             content = response.content.replace("```json", "").replace("```", "").strip()
-            email = json.loads(content).get("email")
-            lead["email"] = email
+            lead["email"] = json.loads(content).get("email")
             lead["email_source"] = "LLM"
         except Exception:
             lead["email"] = None
@@ -276,7 +280,7 @@ def save_node(state: AgentState):
     }
 
 # =================================================
-# GRAPH (PARALLEL EXECUTION)
+# GRAPH
 # =================================================
 workflow = StateGraph(AgentState)
 
@@ -291,12 +295,10 @@ workflow.add_node("save", save_node)
 
 workflow.set_entry_point("planner")
 
-# parallel fan-out
 workflow.add_edge("planner", "career")
 workflow.add_edge("planner", "linkedin")
 workflow.add_edge("planner", "wellfound")
 
-# fan-in
 workflow.add_edge("career", "merge_validate")
 workflow.add_edge("linkedin", "merge_validate")
 workflow.add_edge("wellfound", "merge_validate")
