@@ -1,8 +1,10 @@
 from fastapi import FastAPI, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 import uuid
-from agent import app_graph  # This imports the brain you built
+
+from orchestrator import run_agent_background, JOBS_DB, JobCriteria
+
+
 
 app = FastAPI()
 
@@ -15,67 +17,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# --- In-Memory Database ---
-JOBS_DB = {}
-
-# --- Data Models ---
-class JobCriteria(BaseModel):
-    role: str
-    location: str
-    experience: str
-    skills: str
-
-# --- Background Task (The Worker) ---
-async def run_agent_background(run_id: str, criteria: JobCriteria):
-    # Initialize state
-    initial_state = {
-    "role": criteria.role,
-    "location": criteria.location,
-    "experience": criteria.experience,
-    "skills": criteria.skills,
-
-    "candidate_leads": [],
-    "leads": [],
-
-    "logs": [{"message": "Agent initialized.", "type": "system"}],
-    "status": "PLANNING"
-     }
-
-    
-    JOBS_DB[run_id] = initial_state
-
-    # Run the graph (The Agent Logic)
-    try:
-        async for event in app_graph.astream(initial_state):
-            for node_name, state in event.items():
-                current = JOBS_DB[run_id]
-                
-                # Update Status
-                if node_name in ["career", "linkedin", "wellfound"]:
-                      current["status"] = "SEARCHING"
-                elif node_name == "merge_validate":
-                      current["status"] = "VALIDATING"
-                elif node_name == "score":
-                      current["status"] = "SCORING"
-                elif node_name == "email_enrich":
-                      current["status"] = "ENRICHING"
-                elif node_name == "save":
-                      current["status"] = "COMPLETED"
-
-                
-                # Append Logs
-                if "logs" in state and state["logs"]:
-                    current["logs"].extend(state["logs"])
-                
-                # Update Leads
-                if "leads" in state:
-                    current["leads"] = state["leads"]
-                    
-    except Exception as e:
-        print(f"Error in background task: {e}")
-        JOBS_DB[run_id]["status"] = "ERROR"
-        JOBS_DB[run_id]["logs"].append({"message": f"Critical Error: {str(e)}", "type": "error"})
 
 # --- Endpoints ---
 
